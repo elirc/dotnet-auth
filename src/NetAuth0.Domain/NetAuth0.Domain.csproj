@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>NetAuth0.Domain</AssemblyName>
+    <RootNamespace>NetAuth0.Domain</RootNamespace>
+  </PropertyGroup>
+</Project>

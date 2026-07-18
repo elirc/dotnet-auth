@@ -1,0 +1,12 @@
+bin/
+obj/
+node_modules/
+dist/
+.vs/
+.idea/
+.env
+*.user
+*.suo
+TestResults/
+coverage/
+*.tsbuildinfo

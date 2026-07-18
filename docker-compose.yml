@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: netauth0
+      POSTGRES_USER: netauth0
+      POSTGRES_PASSWORD: netauth0
+    ports:
+      - "5432:5432"
+    volumes:
+      - netauth0-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netauth0 -d netauth0"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  netauth0-postgres:
