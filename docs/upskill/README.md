@@ -20,3 +20,8 @@ Conventions:
 - The senior mindset line: junior asks "how do I make it work?", mid-level asks "is this the right pattern?", senior asks "what does this commit us to, who pays, and how do we reduce risk?"
 
 The strongest path through the suite is: fast track, key flows, pattern catalog, comparison cards, annotation drills, debugging scenarios, good-first tickets, interview prep, then the risk register.
+
+
+## Extended current-source course
+
+Continue with the [extended course](extended-course/README.md), which adds source-grounded lessons, independent predictions, and separate solutions. Its README records the current installment and evidence boundaries.
