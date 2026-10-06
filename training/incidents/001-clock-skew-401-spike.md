@@ -1,6 +1,9 @@
 # Incident 001 — auth failures spiking after yesterday's deploy
 
 **Branch:** `training/incidents/001-clock-skew-401-spike` (based on `main` @ `1d70eac`)
+*(Status 2026-10-06: this branch and commit `563e916` were never pushed, so the `git diff`
+below fails on a fresh clone. Recreate the branch first; see the status note under
+"Incident branches" in `training/README.md`.)*
 **Severity:** SEV2 — intermittent auth failures across all tenants, self-resolving per user
 after ~1 refresh cycle
 **Status:** Open, needs root cause

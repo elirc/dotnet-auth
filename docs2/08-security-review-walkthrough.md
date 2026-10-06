@@ -27,7 +27,9 @@ negative space last because it requires all of it.
 
 Severity: how bad *if this shipped as a real multi-tenant IdP*. Confidence: all findings
 verified by source reading; runtime-dependent details are flagged. Findings F1–F2 would be
-launch blockers; F3–F8 are pre-GA; the rest are hardening.
+launch blockers; F3–F8 and F15–F16 are pre-GA; the rest are hardening. F15–F17 were added
+in a later review pass (2026-10-06). They are *not* in `training/_answers/review.md`'s
+re-ranked list, which was built from F1–F14.
 
 | # | Finding | Evidence | Severity |
 | --- | --- | --- | --- |
@@ -41,14 +43,17 @@ launch blockers; F3–F8 are pre-GA; the rest are hardening.
 | F8 | **MFA enrollment IDOR.** Verification looks up by enrollment ID only; caller's identity never checked. Part of a pattern of unscoped lookups. | [`IdentityService.cs:114-124`](../src/NetAuth0.Application/Identity/IdentityService.cs#L114-L124) | **Medium** |
 | F9 | **Bearer tokens in `localStorage`.** Any XSS = token theft; 15-min expiry is the only bound. Acceptable for a lab; first-party production dashboards should use HttpOnly cookies + CSRF defense. | [`client.ts:50-64`](../frontend/src/api/client.ts#L50-L64), [`LoginPage.tsx:33-36`](../frontend/src/pages/LoginPage.tsx#L33-L36) | **Medium** |
 | F10 | **Error handling collapses everything to 400** and leaks exception messages in Development; OAuth errors are not RFC 6749-shaped, so client libraries can't distinguish `invalid_grant` from `invalid_client`. | [`Program.cs:113-123`](../src/NetAuth0.Api/Program.cs#L113-L123) | **Medium** |
-| F11 | **User-enumeration timing oracle.** Unknown-user login skips the ~100ms BCrypt verify; uniform message, non-uniform latency. | [`IdentityService.cs:51-64`](../src/NetAuth0.Application/Identity/IdentityService.cs#L51-L64) | **Low-Medium** |
+| F11 | **User-enumeration timing oracle.** Unknown-user login skips the BCrypt verify (work factor 12, hundreds of ms); uniform message, non-uniform latency. Separately, a locked/blocked account gets a distinct "Account is temporarily locked." before any password check (line 61). | [`IdentityService.cs:51-64`](../src/NetAuth0.Application/Identity/IdentityService.cs#L51-L64) | **Low-Medium** |
 | F12 | **Rate limiter keyed on raw `RemoteIpAddress`.** Behind any proxy/LB all users share one 20/min bucket (DoS of login); without one, attacker IP rotation defeats it. No forwarded-headers config exists. | [`Program.cs:73-83`](../src/NetAuth0.Api/Program.cs#L73-L83) | **Medium** (deployment-dependent) |
 | F13 | **`plain` PKCE accepted; scope never validated;** `state` not size-bounded. Spec-permitted but below current best practice (RFC 9700 says S256 only). | [`OAuthService.cs:263`](../src/NetAuth0.Application/OAuth/OAuthService.cs#L263) | **Low** |
 | F14 | **`EnsureCreated` fallback in production path** — no migration history means no schema evolution and a trap when the first real migration arrives (doc 06, drill D). | [`Program.cs:138-150`](../src/NetAuth0.Api/Program.cs#L138-L150) | **Medium** (operational) |
+| F15 | **Single-use codes and refresh tokens are single-use only sequentially.** `AuthorizationCode` and `RefreshToken` have no concurrency token (unlike `Tenant`/`ClientApplication`/`User`), so parallel requests presenting the same code or refresh token both pass the in-memory `IsActive` check and both commit. One code → two token families; one refresh → two live children and no `reuse_detected`. (Added in the 2026-10-06 refinement pass; doc 06 ex. 11.) | [`AppDbContext.cs:92-106`](../src/NetAuth0.Infrastructure/Persistence/AppDbContext.cs#L92-L106) vs lines 33/45/65; [`OAuthService.cs:123-149`](../src/NetAuth0.Application/OAuth/OAuthService.cs#L123-L149), [`199-212`](../src/NetAuth0.Application/OAuth/OAuthService.cs#L199-L212) | **Medium-High** |
+| F16 | **Blocking a user does not end their sessions.** `SetUserBlockedAsync` flips `IsBlocked` and revokes nothing; the refresh grant never reads `IsBlocked` (authorize and login both do). A blocked account keeps minting access tokens for up to `RefreshTokenLifetimeDays` unless the admin *also* calls force-logout. (Added 2026-10-06; doc 06 ex. 12.) | [`AdminService.cs:91-98`](../src/NetAuth0.Application/Admin/AdminService.cs#L91-L98), [`OAuthService.cs:205-218`](../src/NetAuth0.Application/OAuth/OAuthService.cs#L205-L218) vs [`OAuthService.cs:37`](../src/NetAuth0.Application/OAuth/OAuthService.cs#L37) | **High** |
+| F17 | **Token type and audience are both unchecked at the API.** ID tokens (`typ: "id"`) and tokens for any client validate as bearer tokens; an ID token works on the `[Authorize]`-only `AuthController` endpoints (MFA enrollment, sessions). Low today because ID tokens carry no `permissions` claims, so the admin policies still reject them. But "an ID token is not an access token" is enforced nowhere. (Added 2026-10-06.) | [`Program.cs:56-62`](../src/NetAuth0.Api/Program.cs#L56-L62), [`JwtTokenIssuer.cs:32,43`](../src/NetAuth0.Infrastructure/Security/JwtTokenIssuer.cs#L32-L43) | **Low** |
 
-Pass attribution — which pass caught what: F1, F2, F8 (trust boundary); F7, F9 (asset);
-F3, F4, F5, F11 (state machine); F6, F10, F13, F14 and the missing rotation audit (negative
-space). If your own review in doc 06 missed a cluster, that tells you which *pass* you
+Pass attribution — which pass caught what: F1, F2, F8, F17 (trust boundary); F7, F9
+(asset); F3, F4, F5, F11, F15 (state machine); F6, F10, F13, F14, F16 and the missing
+rotation audit (negative space). If your own review in doc 06 missed a cluster, that tells you which *pass* you
 under-practice — far more useful than knowing which bug you missed.
 
 ## Fixes, Ordered by Leverage
@@ -67,7 +72,11 @@ problems.
 3. **F5 + F4 (same method):** make `ValidateClientSecretIfRequiredAsync` unconditional;
    delete the early `SaveChangesAsync` so rotation commits once. Two high findings, ~5
    changed lines, fully testable (doc 07's worked examples). **Start here if you want a PR
-   today.**
+   today.** F16 belongs in the same PR family: one `IsBlocked` check in the same method,
+   plus revoking refresh tokens in `SetUserBlockedAsync`.
+   - Follow-up, **F15:** concurrency tokens on `AuthorizationCode`/`RefreshToken` (needs a schema change,
+     so it lands after doc 10 ticket 2's first migration), with
+     `DbUpdateConcurrencyException` mapped to "already used" / reuse detection.
 4. **F3 + F10:** count MFA failures toward lockout; store last-used TOTP step; introduce a
    small exception hierarchy (`OAuthProtocolException(error, description)` + a mapped
    handler) so token errors become spec-shaped and unexpected errors become 500s.

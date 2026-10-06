@@ -77,6 +77,21 @@ Doc 08 F4. The senior-flavored part is *choosing* the mechanism.
   sole-active after a mid-rotation crash; replay test from doc 07 still green.
 - **PR must answer:** why you chose single-save vs explicit transaction, and what happens
   to the audit write's separate commit in each design.
+- **Scope note:** atomicity (crash between saves) is not the same bug as concurrency
+  (two requests at once, doc 08 F15). A single save fixes the first and does nothing for
+  the second. Say so in the PR, and file F15 as its own ticket that needs a migration.
+
+### Ticket 10: Blocking a user ends their sessions
+Doc 06 ex. 12 / doc 08 F16. Small diff, and a good exercise in finding *every* path.
+
+- **Change:** `ExchangeRefreshTokenAsync` rejects (and revokes the family of) a token whose
+  user `IsBlocked`; `SetUserBlockedAsync(blocked: true)` revokes the user's refresh tokens
+  in the same save, reusing `ForceLogoutAsync`'s query.
+- **Accept:** refresh after block → error; the family's tokens have `RevokedAt` set; unblock
+  does *not* resurrect them; client-credentials refresh (no `UserId`) unaffected.
+- **Trap:** before you write the fix, list every place that issues a token
+  (`CreateAuthorizationCodeAsync`, the three `Exchange*` methods, `LoginAsync`) and mark
+  which ones check `IsBlocked`. The table is the PR description.
 
 ### Ticket 7: OAuth-spec error responses
 Doc 08 F10. Cross-cutting; touches the error philosophy of the whole API.
@@ -148,7 +163,10 @@ JWKS caching headers, and the rotation runbook from doc 09 turned into an admin-
 ## Definition of Done (every rung)
 
 - [ ] Red test existed before the fix; suite green after.
-- [ ] `dotnet build` + tests + `npm run build` (when frontend touched) pass.
+- [ ] `dotnet build` + tests + `npm run build` (when frontend touched) pass. If your test
+      lives in `tests/NetAuth0.IntegrationTests`, CI does **not** run it today (doc 07,
+      "Where Tests Go"); either add the CI step in a separate PR first or say plainly in
+      your PR that the test is local-only.
 - [ ] PR description: problem, approach, **risk + rollback**, test evidence (doc 11).
 - [ ] No drive-by refactors — one ticket, one diff.
 - [ ] You can answer "what breaks if this is wrong, and how would we notice?" — if the

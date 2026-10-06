@@ -1,6 +1,9 @@
 # Incident 002 — external report: OAuth authorization codes can be redirected off-domain
 
 **Branch:** `training/incidents/002-redirect-uri-open-redirect` (based on `main` @ `1d70eac`)
+*(Status 2026-10-06: this branch and commit `73a0e08` were never pushed, so the `git diff`
+below fails on a fresh clone. Recreate the branch first; see the status note under
+"Incident branches" in `training/README.md`.)*
 **Severity:** SEV1 — candidate for full account takeover, external report, not yet confirmed
 exploited in the wild
 **Status:** Open, needs triage and root cause before any public statement

@@ -30,7 +30,7 @@ The two findings worth acting on eventually, neither urgent:
 2. **Login's serialized waterfall** — tenant query → user query → BCrypt → MFA query →
    dashboard-app query → permissions query → 2 signs → saves + audit saves. Eight-plus
    round trips. Fine at lab scale; the first thing to consolidate if login latency ever
-   matters (and the BCrypt 100ms+ dominates anyway, which is correct).
+   matters (and the BCrypt verify dominates anyway, which is correct).
 
 ## The Queries That Will Age Badly
 
@@ -57,8 +57,10 @@ Reading LINQ for its SQL translation is a mid-level superpower. Three to study:
   tokens are never purged. **Two compounding omissions: no index and no cleanup job.**
 
 That last point generalizes: `AuthorizationCodes` (consumed, 5-min lifetime) and
-`RefreshTokens` (revoked/expired) have no deletion path anywhere in the repo. Every login
-forever adds permanent rows. The operational fix is a periodic cleanup job — which doubles
+`RefreshTokens` (revoked/expired) have no deletion path anywhere in the repo. Every code
+exchange adds a permanent code row and a refresh-token row, every refresh adds another
+refresh-token row, and every dashboard login adds audit rows. (Dashboard login itself issues
+no refresh token, see doc 04 flow 1.) The operational fix is a periodic cleanup job — which doubles
 as doc 10's background-services ticket.
 
 ## N+1s and Their Absence
@@ -125,8 +127,10 @@ which knob to break in an emergency is what the runbook is actually for.
    worthless after 5 min + consumption; dead refresh tokens are evidence in a reuse
    investigation — keep ~90 days; audit is the investigation record — keep longest,
    partition, archive.)*
-3. Estimate: at 1,000 logins/day, how many rows/year does `RefreshTokens` gain with the
-   dashboard's no-refresh behavior vs. an SPA that refreshes every 15 minutes for an
-   8-hour workday? *(The second number is ~32× the first — rotation multiplies rows, which
-   is why the cleanup job and the missing UserId index will matter sooner than intuition
-   says.)*
+3. Estimate: at 1,000 code-flow logins/day, how many rows/year does `RefreshTokens` gain
+   for a client that never refreshes vs. an SPA that refreshes every 15 minutes for an
+   8-hour workday? *(Never refreshes: one row per login, ~365k/year. Refreshes: 1 + 32
+   rotations = 33 rows per login, ~12M/year, roughly 33× more. Rotation multiplies rows,
+   which is why the cleanup job and the missing UserId index will matter sooner than
+   intuition says. The first-party dashboard contributes **zero** here: its login path
+   issues no refresh token.)*

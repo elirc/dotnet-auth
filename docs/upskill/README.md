@@ -1,5 +1,13 @@
 # NetAuth0 Training Lab
 
+> **Status (2026-10-06):** 36 of this suite's 47 core files are still one-line
+> `TODO: not yet filled` stubs, so most of the table below leads to empty pages. The complete,
+> code-verified curriculum for this repo is [`docs2/`](../../docs2/README.md), 12 chapters
+> from orientation to the security review. Start there. The [`extended-course/`](extended-course/README.md)
+> here is filled in and can serve as a deeper follow-on, though it was not re-verified in the
+> 2026-10-06 pass. The test suite is one `[Fact]`
+> in `tests/NetAuth0.UnitTests/SecurityTests.cs`.
+
 This suite turns NetAuth0 into a training lab for a junior engineer moving toward mid-level and senior work. NetAuth0 is a synthetic identity-provider project: a .NET 8-style API layered into API, Application, Domain, and Infrastructure projects, plus a React/Vite admin dashboard. It implements OAuth/OIDC surfaces, hosted login, application registration, JWT issuance, refresh-token rotation, MFA enrollment, RBAC, audit logging, and local infrastructure scaffolding. The API composition lives in [`Program`](../../src/NetAuth0.Api/Program.cs#L14-L154), the identity domain model lives in [`IdentityEntities`](../../src/NetAuth0.Domain/Identity/IdentityEntities.cs#L19-L355), and the React API boundary lives in [`api`](../../frontend/src/api/client.ts#L81-L100). Provenance is synthetic: there is no commit history and the full tree is untracked, so contribution modules are simulated maintainer practice rather than real OSS archaeology. Backend execution is not locally verified because `dotnet` is missing; frontend build and npm audit are verified.
 
 Use this lab in four modes:

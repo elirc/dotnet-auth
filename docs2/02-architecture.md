@@ -89,7 +89,7 @@ Three things to notice, in ascending order of subtlety:
 
 ## The Data Model
 
-Fourteen entities; the schema is `identity` in PostgreSQL
+Fifteen entity classes; the schema is `identity` in PostgreSQL
 ([`AppDbContext.cs:27`](../src/NetAuth0.Infrastructure/Persistence/AppDbContext.cs#L27)).
 The mapping decisions worth studying:
 
@@ -105,8 +105,10 @@ The mapping decisions worth studying:
 - **`xmin` as concurrency token** on Tenant, ClientApplication, User
   ([`AppDbContext.cs:33`](../src/NetAuth0.Infrastructure/Persistence/AppDbContext.cs#L33)).
   PostgreSQL's hidden row-version column gives optimistic concurrency for free — no
-  `RowVersion` column to maintain. Tokens/codes notably do *not* get one; ask yourself
-  whether refresh-token rotation under concurrent requests deserves it (doc 06, exercise 8).
+  `RowVersion` column to maintain. `AuthorizationCode` and `RefreshToken` notably do *not*
+  get one ([`AppDbContext.cs:92-106`](../src/NetAuth0.Infrastructure/Persistence/AppDbContext.cs#L92-L106)),
+  and that's not cosmetic: two concurrent redemptions of the same code or refresh token can
+  both succeed. Doc 06, exercise 11 walks through it.
 - **Hashes for everything bearer-shaped.** `AuthorizationCode.CodeHash`,
   `RefreshToken.TokenHash`, `RecoveryCode.CodeHash` — all SHA-256, all uniquely indexed,
   raw value returned to the caller exactly once.
@@ -163,11 +165,17 @@ able to fill in the middle column without being told.
    [`Program.cs:87-94`](../src/NetAuth0.Api/Program.cs#L87-L94). Test: construct
    `new RequestContext("1.2.3.4", "test-agent", null)` and assert the audit row carries the
    IP — no HTTP plumbing required.
-3. [`AdminService.CreateApplicationAsync`](../src/NetAuth0.Application/Admin/AdminService.cs#L40-L48)
-   dedupes redirect URIs / grant types in memory; the unique indexes on
-   `(ClientApplicationId, Uri)` and `(ClientApplicationId, GrantType)` backstop. Race-loss
-   (and any constraint violation) becomes an unhandled `DbUpdateException` → generic 400
-   "Request failed" with no detail outside Development. Acceptable for a lab; in production
-   you'd map it to a meaningful conflict response.
+3. [`AdminService.AssignRoleAsync`](../src/NetAuth0.Application/Admin/AdminService.cs#L138-L142)
+   checks `UserRoles.AnyAsync(...)` before inserting; the composite primary key
+   `(UserId, RoleId)` ([`AppDbContext.cs:81`](../src/NetAuth0.Infrastructure/Persistence/AppDbContext.cs#L81))
+   is the backstop. (A third instance: `CreateRoleAsync` looks up each permission by name
+   before adding it, lines 119-124, backed by the unique `(ClientApplicationId, Name)` index
+   at `AppDbContext.cs:76`.) Two admins assigning the same role at the same moment: both
+   pass `AnyAsync`, one insert hits the PK, and the resulting `DbUpdateException` becomes a
+   generic 400 "Request failed" with no detail outside Development — for an operation whose
+   desired end state was actually reached. Acceptable for a lab; in production you'd treat
+   that specific violation as success (idempotent assign) or map it to 409.
+   (`CreateApplicationAsync`'s in-memory `Distinct` on redirect URIs is *not* an example —
+   the app is brand new, so no other request can race it.)
 
 </details>

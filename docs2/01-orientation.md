@@ -51,12 +51,13 @@ which the API calls at startup ([`Program.cs:21`](../src/NetAuth0.Api/Program.cs
 | `src/NetAuth0.Api/Program.cs` | All startup: DI, auth, CORS, rate limiting, error handling, schema creation, seeding | first, and again in doc 02 |
 | `src/NetAuth0.Application/` | Business logic. One folder per area (Identity, OAuth, Admin, Audit) with a `*Service.cs` and a `*Contracts.cs` (request/response records) | most of your time |
 | `src/NetAuth0.Application/Abstractions/` | Interfaces Infrastructure must implement: [`IAppDbContext`](../src/NetAuth0.Application/Abstractions/IAppDbContext.cs), [`SecurityAbstractions`](../src/NetAuth0.Application/Abstractions/SecurityAbstractions.cs) (`IClock`, `IPasswordHasher`, `ISecretGenerator`, `ITokenIssuer`, `ITotpService`) | understanding the seam between layers |
-| `src/NetAuth0.Domain/Identity/` | All 14 entities in one file: [`IdentityEntities.cs`](../src/NetAuth0.Domain/Identity/IdentityEntities.cs) | learning the nouns |
+| `src/NetAuth0.Domain/Identity/` | All 15 entity classes (plus the `ClientApplicationType` and `GrantType` enums) in one file: [`IdentityEntities.cs`](../src/NetAuth0.Domain/Identity/IdentityEntities.cs) | learning the nouns |
 | `src/NetAuth0.Infrastructure/Persistence/` | [`AppDbContext`](../src/NetAuth0.Infrastructure/Persistence/AppDbContext.cs) (EF mappings), [`DbSeeder`](../src/NetAuth0.Infrastructure/Persistence/DbSeeder.cs) (default tenant/admin/SPA client) | schema questions |
 | `src/NetAuth0.Infrastructure/Security/` | [`JwtTokenIssuer`](../src/NetAuth0.Infrastructure/Security/JwtTokenIssuer.cs), [`KeyManagementService`](../src/NetAuth0.Infrastructure/Security/KeyManagementService.cs), [`SecurityServices`](../src/NetAuth0.Infrastructure/Security/SecurityServices.cs) (BCrypt, SHA-256, TOTP, randomness) | doc 03 |
 | `frontend/src/api/client.ts` | The entire frontend↔API contract: types, token storage, fetch wrapper | frontend work |
 | `frontend/src/pages/` | One page per screen; [`ApplicationsPage`](../frontend/src/pages/ApplicationsPage.tsx) is the richest example | frontend work |
-| `tests/NetAuth0.UnitTests/` | Currently **one test** ([`SecurityTests`](../tests/NetAuth0.UnitTests/SecurityTests.cs)). This is a gap, and doc 07 is about fixing it | doc 07 |
+| `tests/NetAuth0.UnitTests/` | Currently **one test** (a single `[Fact]` in [`SecurityTests`](../tests/NetAuth0.UnitTests/SecurityTests.cs)). This is a gap, and doc 07 is about fixing it | doc 07 |
+| `tests/NetAuth0.IntegrationTests/` | **Only a `.csproj`** — it already references `Microsoft.AspNetCore.Mvc.Testing` and `Testcontainers.PostgreSql`, but contains zero test files, and CI never runs it | doc 07 |
 | `docker-compose.yml`, `infra/` | PostgreSQL 16 + Redis containers | running locally |
 | `.github/workflows/ci.yml` | Backend build/test + frontend build | knowing what "green" means |
 
@@ -107,9 +108,10 @@ Things worth knowing before your first run:
   No migrations are committed yet, so you're on the fallback path. That's fine locally and
   a real problem for production — doc 08 explains why.
 - Swagger UI is at `/swagger` in Development. Health check at `/healthz`.
-- The dashboard asks you to paste the tenant ID
-  ([`DashboardPage.tsx:18`](../frontend/src/pages/DashboardPage.tsx#L18)). Get it from the
-  login response in the network tab, or query `identity."Tenants"` in PostgreSQL.
+- The dashboard reads the tenant ID from `localStorage`, which the login page fills in from
+  the login response ([`LoginPage.tsx:36`](../frontend/src/pages/LoginPage.tsx#L36)). The
+  "Tenant ID" box ([`DashboardPage.tsx:18`](../frontend/src/pages/DashboardPage.tsx#L18)) is
+  a manual override; to find a tenant ID by hand, query `identity."Tenants"` in PostgreSQL.
 
 ## First Reading Order
 
@@ -117,7 +119,7 @@ Ten files, in order. Skim for shape, not mastery — total budget two hours.
 
 1. [`Program.cs`](../src/NetAuth0.Api/Program.cs) — everything the app *is* at startup.
 2. [`IdentityEntities.cs`](../src/NetAuth0.Domain/Identity/IdentityEntities.cs) — the nouns. Notice every property has a private setter and changes go through named methods.
-3. [`AppDbContext.cs`](../src/NetAuth0.Infrastructure/Persistence/AppDbContext.cs) — uniqueness, indexes, `xmin` concurrency tokens.
+3. [`AppDbContext.cs`](../src/NetAuth0.Infrastructure/Persistence/AppDbContext.cs) — uniqueness, indexes, `xmin` concurrency tokens (and which three entities have one; doc 06 ex. 11 is about the ones that don't).
 4. [`DependencyInjection.cs`](../src/NetAuth0.Infrastructure/DependencyInjection.cs) — note which services are singleton vs scoped, and ask yourself why for each.
 5. [`OAuthController.cs`](../src/NetAuth0.Api/Controllers/OAuthController.cs) — small, but look at `ReadClientCredentials` handling Basic auth.
 6. [`OAuthService.cs`](../src/NetAuth0.Application/OAuth/OAuthService.cs) — the heart of the repo. You will read this file ten more times.

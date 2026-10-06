@@ -24,6 +24,24 @@ Testcontainers), a few **pure unit tests** for crypto helpers and domain methods
 codes). Skip mocking `IAppDbContext` — mocked `DbSet` LINQ lies to you; the SQL translation
 *is* part of what you're testing.
 
+## Where Tests Go (and What CI Actually Runs)
+
+Two test projects exist, and they are not equal:
+
+| Project | References | Contents today | Run by CI? |
+| --- | --- | --- | --- |
+| [`NetAuth0.UnitTests`](../tests/NetAuth0.UnitTests/NetAuth0.UnitTests.csproj) | Domain, Infrastructure, xunit | 1 `[Fact]` ([`SecurityTests.cs:8`](../tests/NetAuth0.UnitTests/SecurityTests.cs#L8)) | yes |
+| [`NetAuth0.IntegrationTests`](../tests/NetAuth0.IntegrationTests/NetAuth0.IntegrationTests.csproj) | Api (so everything), `Microsoft.AspNetCore.Mvc.Testing`, `Testcontainers.PostgreSql` | **no `.cs` files at all** | **no** |
+
+CI runs exactly one test command:
+`dotnet test tests/NetAuth0.UnitTests/NetAuth0.UnitTests.csproj` (see
+[`ci.yml`](../.github/workflows/ci.yml)). So worked example 1 belongs in `UnitTests`, and
+examples 2 and 3 belong in `IntegrationTests` because that project already has the packages
+they need. But nothing you put in `IntegrationTests` is protected until someone adds a CI
+step for it. That step needs Docker on the runner (Testcontainers); `ubuntu-latest` GitHub
+runners have it. Adding the CI step is part of the job: a test that no pipeline runs is
+documentation, not protection.
+
 ## What Makes This Codebase Testable (Use It)
 
 The abstractions exist precisely for this:
@@ -31,8 +49,8 @@ The abstractions exist precisely for this:
 - `IClock` — make lockout/expiry tests deterministic: `FakeClock { UtcNow = T0 }`, advance
   15 minutes without `Thread.Sleep`.
 - `ISecretGenerator`, `ITotpService`, `IPasswordHasher` — real implementations are fine in
-  tests (fast enough), but BCrypt at work factor 12 is ~100ms/call; for login-heavy suites
-  inject a cheap fake hasher.
+  tests, but BCrypt at work factor 12 costs hundreds of milliseconds per call (it's
+  supposed to); for login-heavy suites inject a cheap fake hasher.
 - `RequestContext` — `new RequestContext("1.2.3.4", "tests", null)`. No HTTP needed for any
   service test.
 - `public partial class Program;` ([`Program.cs:154`](../src/NetAuth0.Api/Program.cs#L154))
@@ -119,17 +137,59 @@ Notes that matter more than the code:
   point of family revocation.
 - A second test injecting a throwing `ITokenIssuer` between the two saves pins the
   atomicity bug from doc 06 ex. 8 — write it *expecting current behavior to fail*, mark it
-  `[Fact(Skip="known: rotation not transactional — doc2/08 F4")]`, and you've turned a
+  `[Fact(Skip="known: rotation not transactional — docs2/08 F4")]`, and you've turned a
   finding into an executable TODO. That's a senior-level artifact.
+- The same fixture is what doc 06 ex. 11 (parallel redemption) needs. The one change is
+  that each concurrent call gets its **own** `AppDbContext` and `OAuthService`, because a
+  single context is not thread-safe, and sharing one would hide the race behind EF's
+  change tracker.
 
 ## Worked Example 3: HTTP-Contract Test
 
 Some behavior only exists at the HTTP layer: form binding names, Basic-auth parsing,
 policies, the rate limiter, ProblemDetails shape.
 
+Before writing one, know the three things about *this* `Program.cs` that will make a naive
+`WebApplicationFactory<Program>` test fail. Each one comes from reading the code:
+
+1. **Startup touches PostgreSQL unconditionally.** Lines 138-150 run
+   `MigrateAsync`/`EnsureCreatedAsync` and the seeder before the host starts, so the factory
+   must point `ConnectionStrings:Postgres` at a real database (Testcontainers) before the
+   first `CreateClient()`.
+2. **JwtBearer fetches its keys over HTTP from itself.** `Authority` and `MetadataAddress`
+   are `http://localhost:5080` ([`Program.cs:49-55`](../src/NetAuth0.Api/Program.cs#L49-L55)).
+   Under `TestServer` nothing listens on that port, so every bearer token would fail
+   validation and you'd see 401 where you expected 403. Route the metadata fetch through the
+   in-memory server by setting `JwtBearerOptions.BackchannelHttpHandler`.
+3. **The rate limiter partitions by remote IP** ([`Program.cs:73-83`](../src/NetAuth0.Api/Program.cs#L73-L83)),
+   and under `TestServer` that's usually null, so every request lands in the `"unknown"`
+   bucket. All tests share 20 requests/minute on the `public-auth` endpoints (signup, login,
+   token, authorize). A larger suite will start seeing 429s that have nothing to do with the
+   code under test.
+
+A factory and two tests that respect all three. This is a sketch written against the
+current signatures (`SignupRequest`/`LoginRequest`/`LoginResponse` in
+[`IdentityContracts.cs`](../src/NetAuth0.Application/Identity/IdentityContracts.cs)); it was
+**not compiled** in this docs pass, so expect to fix `using`s.
+
 ```csharp
-public sealed class TokenEndpointTests(WebApplicationFactory<Program> factory)
-    : IClassFixture<WebApplicationFactory<Program>>
+public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
+{
+    private readonly PostgreSqlContainer _pg = new PostgreSqlBuilder().Build();
+
+    public Task InitializeAsync() => _pg.StartAsync();
+    public new Task DisposeAsync() => _pg.DisposeAsync().AsTask();
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseSetting("ConnectionStrings:Postgres", _pg.GetConnectionString());   // gotcha 1
+        builder.ConfigureTestServices(services =>
+            services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme,
+                o => o.BackchannelHttpHandler = Server.CreateHandler()));          // gotcha 2
+    }
+}
+
+public sealed class HttpContractTests(ApiFactory factory) : IClassFixture<ApiFactory>
 {
     [Fact]
     public async Task Unsupported_grant_type_returns_400()
@@ -137,23 +197,41 @@ public sealed class TokenEndpointTests(WebApplicationFactory<Program> factory)
         var client = factory.CreateClient();
         var resp = await client.PostAsync("/connect/token", new FormUrlEncodedContent(
             new Dictionary<string, string> { ["grant_type"] = "password" }));
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);   // OAuthService.cs:78 throws → handler maps to 400
     }
 
     [Fact]
     public async Task Admin_endpoint_without_permission_claim_returns_403()
     {
-        // issue a token with no "permissions" claims, call /api/v1/admin/applications
-        // expect 403 — this test pins the policy wiring in Program.cs:65-71
+        var client = factory.CreateClient();
+        var email = $"noperm-{Guid.NewGuid():N}@test.local";
+
+        // A fresh signup has no UserRole rows, so IssueUserTokensAsync emits no "permissions" claims.
+        (await client.PostAsJsonAsync("/api/v1/auth/signup",
+            new { tenantSlug = "default", email, displayName = "No Perms", password = "Password123!" }))
+            .EnsureSuccessStatusCode();
+        var login = await (await client.PostAsJsonAsync("/api/v1/auth/login",
+            new { tenantSlug = "default", email, password = "Password123!" }))
+            .Content.ReadFromJsonAsync<JsonElement>();
+
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", login.GetProperty("accessToken").GetString());
+        var resp = await client.GetAsync(
+            $"/api/v1/admin/applications?tenantId={login.GetProperty("tenantId").GetString()}");
+
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);   // pins Program.cs:65-71 + AdminController.cs:14
     }
 }
 ```
 
-(You'll need to override the connection string for tests —
-`WebApplicationFactory.WithWebHostBuilder(b => b.ConfigureAppConfiguration(...))` pointing
-at the Testcontainers instance. The startup seeding at
-[`Program.cs:138-150`](../src/NetAuth0.Api/Program.cs#L138-L150) then gives you the default
-tenant/admin for free.)
+Why the second test is worth more than it looks: if it returns **401** instead of 403,
+gotcha 2 is biting (authentication failed before authorization ran). That's the 401-vs-403
+distinction from the debugging playbook below, met in a test instead of an incident. A
+natural third test is the tenant-isolation one doc 08 F2 asks for: insert a second tenant
+directly through `AppDbContext` (there is no tenant-creation API), log in as the seeded
+admin, and call `GET /api/v1/admin/users?tenantId=<other tenant>`.
+Today it returns 200. Write it with the assertion you *want* (403) and mark it
+`Skip` with the finding ID.
 
 ## The Debugging Playbook
 
@@ -212,8 +290,29 @@ matters: mass token invalidation from a rotation+JWKS bug would be invisible).
 - Before committing: re-run the *invariant* tests (token lifecycle), not just the test for
   your change. Security regressions are quiet.
 
-## Exercise
+## Exercises
 
+**Exercise 1 (easy) — read the one test that exists.**
+*Goal:* know exactly what the current suite proves. Open
+[`SecurityTests.cs`](../tests/NetAuth0.UnitTests/SecurityTests.cs) and write one sentence
+for each assertion. *Hint:* follow `Sha256Base64Url` and `FixedTimeEquals` into
+[`SecurityServices.cs:23-34`](../src/NetAuth0.Infrastructure/Security/SecurityServices.cs#L23-L34).
+**Check:** you should conclude that the test proves the hash is deterministic and that
+`FixedTimeEquals` distinguishes two different hashes (lines 16-17). It does **not** prove
+anything about `OAuthService`'s PKCE branch, the `plain` method, or that the comparison is
+actually constant-time. If your sentence says "PKCE is tested," re-read it.
+
+**Exercise 2 (medium) — pin a domain truth table.**
+*Goal:* write `RefreshToken.IsActive` tests with no database. *Hint:* the constructor is
+public ([`IdentityEntities.cs:242`](../src/NetAuth0.Domain/Identity/IdentityEntities.cs#L242));
+`IsActive` is one line ([line 266](../src/NetAuth0.Domain/Identity/IdentityEntities.cs#L266)).
+**Check:** your cases must include (a) a fresh unexpired token → `true`; (b) after
+`RotateTo` → `false` *and* `RevokedAt` is set, because `RotateTo` sets both fields (lines
+267-271), which is exactly what causes doc 06 ex. 7; (c) `Revoke` twice keeps the *first*
+timestamp (`??=`, line 272); (d) `ExpiresAt == now` → `false` (strict `>`). If (b) surprises
+you, you've found the root of the sessions-list bug by test rather than by reading.
+
+**Exercise 3 (hard) — the red test for a security fix.**
 Pick doc 06's exercise 5 (refresh without client secret). Write the full red test against
 `OAuthService` — seed a confidential client, get a refresh token legitimately, present it
 with `ClientSecret = null`, assert it throws. Run it mentally through the code: confirm it

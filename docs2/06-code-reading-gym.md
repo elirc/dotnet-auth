@@ -1,7 +1,7 @@
 # 06 — Code Reading Gym
 
 Goal: build the habit that most reliably moves you from junior to mid: reading code for
-**what can go wrong**, not what it does. Two parts: annotation drills (warm-up), then ten
+**what can go wrong**, not what it does. Two parts: annotation drills (warm-up), then twelve
 find-the-real-bug exercises. Every bug in part two is genuinely present in this codebase —
 verified by source reading, not invented for the exercise.
 
@@ -28,8 +28,13 @@ MFA challenge, MFA failure, success). Mark which branches save state and which o
 **Drill C:** [`PagedResult.CreateAsync`](../src/NetAuth0.Application/Common/PagedResult.cs#L5-L12).
 Small enough to fully specify. What are the exact bounds of `page` and `pageSize` after
 normalization? Why does it take `materialize`/`count` as delegates instead of calling
-`ToListAsync` itself? *(Application can't reference EF's async extension methods — the
-delegates invert that dependency. This is ports-and-adapters in miniature.)*
+`ToListAsync` itself? *(Bounds: `page ≥ 1`, `1 ≤ pageSize ≤ 100`. On the delegates: it is
+**not** because Application can't use EF — `NetAuth0.Application.csproj` references
+`Microsoft.EntityFrameworkCore` and `OAuthService` calls `ToListAsync` directly. The
+delegates keep `PagedResult` itself free of EF so it works over any `IQueryable`; callers
+pass `q => q.ToListAsync(ct)` ([`AdminService.cs:87-88`](../src/NetAuth0.Application/Admin/AdminService.cs#L87-L88)).
+Lesson: when a doc or a reviewer explains a design with "X can't do Y," check the project
+file before believing it.)*
 
 **Drill D:** [`Program.cs:138-150`](../src/NetAuth0.Api/Program.cs#L138-L150) (startup
 schema block). Annotate what happens on: fresh DB + no migrations; existing DB + first
@@ -215,6 +220,63 @@ out-parameter from a security library is a flashing light — the API author put
 for a reason.**
 </details>
 
+### Exercise 11 — two requests, one token
+Read [`ExchangeAuthorizationCodeAsync` lines 117-149](../src/NetAuth0.Application/OAuth/OAuthService.cs#L117-L149),
+then the `AuthorizationCode` and `RefreshToken` mappings in
+[`AppDbContext.cs:92-106`](../src/NetAuth0.Infrastructure/Persistence/AppDbContext.cs#L92-L106),
+and compare them with the `User` mapping at line 65. A client's network layer retries
+`POST /connect/token` because the first attempt seemed to time out, so two identical
+requests carrying the same code arrive 5 ms apart. What does each one get?
+
+<details><summary>Answer</summary>
+
+**Both get a full token set.** Each request loads the code row while `ConsumedAt` is still
+null, so both pass `IsActive` (line 123), both call `Consume` in memory (line 145), and both
+save. EF's `UPDATE ... SET "ConsumedAt" = @p WHERE "Id" = @id` has no version predicate,
+because `AuthorizationCode` has no concurrency token. Only `Tenant`, `ClientApplication` and
+`User` call `UseXminAsConcurrencyToken()` (lines 33, 45, 65). So the second save succeeds
+too. Result: two independent refresh-token families from one code. The refresh grant has
+the same shape. Two parallel refreshes with the same live token both pass line 199, both
+insert a child, and `RotateTo` is applied twice (last writer wins on `ReplacedById`). The
+family now has two live branches, and `reuse_detected` never fires.
+
+Severity: **medium-high**. Code double-redemption is exactly what single-use is meant to
+stop; RFC 6749 §4.1.2 even says a reused code SHOULD revoke the tokens already issued from
+it. Fix: add `b.UseXminAsConcurrencyToken()` to both mappings and treat
+`DbUpdateConcurrencyException` as "already used" (for refresh, route it into
+`RevokeFamilyForReuseAsync`), or make consumption a conditional update
+(`ExecuteUpdateAsync` with `WHERE "ConsumedAt" IS NULL` and check that exactly one row
+changed). Test: needs a real database (doc 07, worked example 2's fixture). Fire two
+`ExchangeTokenAsync` calls from separate `DbContext`s with `Task.WhenAll` and assert exactly
+one succeeds; today both do. Lesson: **"single-use" is a claim about concurrency, and the
+in-memory check is not where concurrency is decided — the database write is.**
+</details>
+
+### Exercise 12 — blocked, but still refreshing
+Read [`AdminService.SetUserBlockedAsync`](../src/NetAuth0.Application/Admin/AdminService.cs#L91-L98),
+then [`ExchangeRefreshTokenAsync` lines 205-218](../src/NetAuth0.Application/OAuth/OAuthService.cs#L205-L218).
+An admin blocks a compromised account through the dashboard. The attacker is holding a
+refresh token from a code-flow client. How long does the attacker keep API access?
+
+<details><summary>Answer</summary>
+
+**Until the refresh token family expires — up to `RefreshTokenLifetimeDays` (30 by default,
+[`IdentityEntities.cs:59`](../src/NetAuth0.Domain/Identity/IdentityEntities.cs#L59)) — as
+long as they keep rotating.** `SetUserBlockedAsync` only flips `IsBlocked`; it does not
+revoke any refresh tokens. The refresh path loads the user (lines 205-207) and issues fresh
+access tokens without ever reading `IsBlocked`. Compare authorize
+([line 37](../src/NetAuth0.Application/OAuth/OAuthService.cs#L37)) and login
+([`IdentityService.cs:58`](../src/NetAuth0.Application/Identity/IdentityService.cs#L58)),
+which both check it. An admin who knows to *also* call `force-logout`
+([`ForceLogoutAsync`](../src/NetAuth0.Application/Admin/AdminService.cs#L100-L110)) closes
+the hole, but nothing in the API or UI says that's required. This is doc 08's "inconsistency
+between similar paths" lesson again: three entry points issue tokens, and two of them check
+the flag. Severity: **high** (an incident-response control that silently doesn't work).
+Fix: check `user.IsBlocked` in the refresh path (and revoke the family when it is), and
+have `SetUserBlockedAsync(blocked: true)` revoke the user's refresh tokens in the same save.
+Test: issue a refresh token, block the user, refresh, and expect failure; today it succeeds.
+</details>
+
 ---
 
 ## Scoring
@@ -223,10 +285,12 @@ for a reason.**
 | --- | --- |
 | 0–2 | expected junior — redo doc 04 and return in a week |
 | 3–5 | solid junior → mid transition underway |
-| 6–8 | mid-level reading skills; you're review-ready |
-| 9–10 | senior-grade adversarial reading |
+| 6–9 | mid-level reading skills; you're review-ready |
+| 10–12 | senior-grade adversarial reading |
 
 The repeatable technique, if you want to name it: for every function ask **"who calls
 this, with what they shouldn't; what does it skip when inputs are absent; what's true
 in memory but not yet on disk; and which field does it return that nothing enforces."**
-Those four questions found all ten bugs.
+Those four questions cover the first ten bugs. Exercises 11 and 12 add two more:
+**"what if this runs twice at once?"** and **"do the other entry points that do the same
+job make the same check?"**

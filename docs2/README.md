@@ -6,8 +6,8 @@ cites real code in this repository. Nothing here is a stub.
 
 ## Why v2
 
-The original `docs/upskill` suite had a good skeleton but 34 of its 47 files were empty TODO
-stubs, and its analysis missed several real defects in the code. This version:
+The original `docs/upskill` suite had a good skeleton but 36 of its 47 core files (not
+counting its later `extended-course/`) are still empty TODO stubs, and its analysis missed several real defects in the code. This version:
 
 - **Is complete.** Twelve dense documents, no placeholders.
 - **Is sequenced.** Each doc builds on the previous one; finish them in order.
@@ -27,7 +27,7 @@ stubs, and its analysis missed several real defects in the code. This version:
 | 03 | [OAuth from the Code](03-oauth-from-the-code.md) | OAuth2/OIDC, PKCE, JWT, key rotation — learned from this repo | 1–2 days |
 | 04 | [Flow Traces](04-flow-traces.md) | Five end-to-end traces with the subtle behavior most readers miss | 1 day |
 | 05 | [Pattern Catalog](05-pattern-catalog.md) | The repo's patterns, when they work, and where this repo violates its own | half a day |
-| 06 | [Code Reading Gym](06-code-reading-gym.md) | Annotation drills + ten find-the-real-bug exercises with answers | 1–2 days |
+| 06 | [Code Reading Gym](06-code-reading-gym.md) | Annotation drills + twelve find-the-real-bug exercises with answers | 1–2 days |
 | 07 | [Testing & Debugging](07-testing-and-debugging.md) | Test strategy, concrete test code for this repo, debugging playbook | 1–2 days |
 | 08 | [Security Review Walkthrough](08-security-review-walkthrough.md) | How a senior audits an auth system, then the actual findings | 1 day |
 | 09 | [Performance & Operations](09-performance-and-operations.md) | Query/crypto cost analysis, observability, rotation runbook | half a day |
@@ -73,3 +73,10 @@ reading it as "what can go wrong" — that single habit change drives most of th
 - Defects called out in docs 06 and 08 were verified by reading the source, not by running
   exploits. Where a finding depends on runtime behavior (e.g., model-binding details), the
   doc says so and tells you how to confirm it.
+- A second static review pass (2026-10-06) re-verified every citation, added three
+  findings the first pass missed (doc 08 F15–F17: parallel token redemption, blocked users
+  still refreshing, token type unchecked), and corrected a handful of factual slips. See
+  the last section of doc 12 for the list.
+- `training/` builds on this curriculum (blind review + two incidents). Its incident
+  branches were never pushed to the remote, so read `training/README.md`'s status note
+  before starting it.

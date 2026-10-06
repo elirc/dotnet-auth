@@ -36,6 +36,31 @@ security review and two realistic on-call incidents, both graded against sealed 
 
 ## Incident branches
 
+> **Status (checked 2026-10-06): these branches do not exist on the remote.**
+> `git branch -r` on a fresh clone of `github.com/elirc/dotnet-auth` shows only
+> `origin/main`. Commits `563e916` and `73a0e08` are not in the cloned history either
+> (`git cat-file -t 563e916` fails). The
+> `git diff 1d70eac 563e916` / `git diff 1d70eac 73a0e08` commands in the incident briefs
+> therefore **cannot run from a fresh clone**.
+>
+> Workaround: recreate each suspect diff yourself on a scratch branch from `main`, using the
+> one-line descriptions below. Reading them spoils part of the "find the suspect change"
+> step, but the root-cause analysis, fix, regression test, and postmortem are still the
+> whole exercise:
+>
+> ```
+> git switch -c training/incidents/001-clock-skew-401-spike main
+> # Program.cs: inside TokenValidationParameters (lines 56-62) add  ClockSkew = TimeSpan.Zero,
+> git switch -c training/incidents/002-redirect-uri-open-redirect main
+> # OAuthService.cs ValidateRedirectUri (line 250): string.Equals(x.Uri, redirectUri, Ordinal)
+> #   -> redirectUri.StartsWith(x.Uri, StringComparison.Ordinal)
+> ```
+>
+> The sealed answer keys in `_answers/` show those same one-line changes, so they remain
+> usable. `1d70eac` is still in `main`'s history (it's the initial commit), and nothing
+> under `src/`, `tests/` or `frontend/` has changed since it, so branching from current
+> `main` gives the same starting code.
+
 - `training/incidents/001-clock-skew-401-spike` (commit `563e916`, based on `main`
   `1d70eac`) — `Program.cs`: `ClockSkew = TimeSpan.Zero` added to JWT bearer validation.
 - `training/incidents/002-redirect-uri-open-redirect` (commit `73a0e08`, based on `main`

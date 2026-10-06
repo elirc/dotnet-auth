@@ -107,7 +107,8 @@ crackable in milliseconds); or logging the raw secret on the way out.
 
 **Violation here:** recovery codes are `UrlSafe(10)` — 10 random *bytes*, still fine — but
 TOTP secrets are necessarily stored plaintext (the server must compute codes), which is why
-MFA secret storage usually deserves encryption-at-rest. Borderline, noted in doc 08.
+MFA secret storage usually deserves encryption-at-rest. Borderline — and *not* in doc 08's
+findings table; adding it as an asset-pass finding is a good self-test.
 
 ## 6. Claim-Based Authorization Policies
 
@@ -181,6 +182,7 @@ event names are raw strings with no central registry.
 | **Trusting client-supplied identifiers** | `tenantId` in admin query/body; `user_id` at authorize | the canonical IDOR setup; identifiers of *whose data* must come from the token |
 | **Catch-all error flattening** | exception handler returns 400 always ([`Program.cs:113-123`](../src/NetAuth0.Api/Program.cs#L113-L123)) | DB down reads as "client sent a bad request"; alerting and clients both misled |
 | **Fire-and-forget feature stubs** | `LoginTicket` never validated; recovery codes never redeemable | dead fields invite false confidence ("we have MFA recovery" — you don't) |
+| **Dependencies nobody calls** | `MediatR` and `FluentValidation` in [`NetAuth0.Application.csproj`](../src/NetAuth0.Application/NetAuth0.Application.csproj), `FluentValidation.AspNetCore` in [`NetAuth0.Api.csproj`](../src/NetAuth0.Api/NetAuth0.Api.csproj) — no `IMediator`, handler, or `AbstractValidator` exists anywhere in `src/` | readers assume a pipeline/validation layer exists and go looking for it; extra supply-chain surface for zero value. Delete them or use them |
 | **Non-sargable predicates** | `DisplayName.ToLower().Contains(q)` ([`AdminService.cs:79`](../src/NetAuth0.Application/Admin/AdminService.cs#L79)) | LOWER() defeats any index → sequential scan as users grow (doc 09) |
 
 ## Exercise

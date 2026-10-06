@@ -37,8 +37,9 @@ performs, in order:
    ([`ValidateRedirectUri`](../src/NetAuth0.Application/OAuth/OAuthService.cs#L248-L254)) —
    `StringComparison.Ordinal`, no prefix matching, no wildcard. This single check is what
    stops an attacker from receiving your authorization code at `https://evil.example`.
-   Auth0 production incidents have come from looser matching; exact-match is the correct
-   default.
+   Prefix/wildcard matching is a well-known source of real OAuth vulnerabilities (RFC 9700
+   requires exact string matching); `training/incidents/002` is a drill built on exactly
+   that regression.
 4. **PKCE presence check** ([`ValidatePkce`](../src/NetAuth0.Application/OAuth/OAuthService.cs#L256-L267)) — see below.
 5. **Code minting** (lines 42-56): 32 random bytes, base64url
    ([`SecretGenerator.UrlSafe`](../src/NetAuth0.Infrastructure/Security/SecurityServices.cs#L21)),
@@ -90,7 +91,14 @@ is a checklist — every line is a distinct attack it forecloses:
 | code not expired, not consumed | 123-126 | replay; stolen-code shelf life |
 | `redirect_uri` equals the one used at authorize | 128-131 | code interception via redirect switch |
 | PKCE verifier matches | 133-143 | code theft without verifier |
-| code marked consumed | 145 | second redemption |
+| code marked consumed | 145 | second redemption — *sequential* only |
+
+That last row has a caveat. "Consumed" is a property set in memory and saved at line 149;
+`AuthorizationCode` has no concurrency token
+([`AppDbContext.cs:92-99`](../src/NetAuth0.Infrastructure/Persistence/AppDbContext.cs#L92-L99)),
+so two requests that load the same unconsumed code at the same moment both pass line 123 and
+both get tokens. Single-use holds for replays that arrive *after* the first exchange
+committed, not for parallel ones. Doc 06, exercise 11.
 
 Client authentication accepts both HTTP Basic and form fields
 ([`ReadClientCredentials`](../src/NetAuth0.Api/Controllers/OAuthController.cs#L61-L72)), per
@@ -140,7 +148,7 @@ use RT1 ─► RT1 is dead ⇒ REUSE ⇒ RT1,RT2,RT3 all marked reused+revoked
 use RT3 ─► fails (family dead) — attacker holding RT3 gets nothing
 ```
 
-Two sharp edges you should be able to discuss (both are gym exercises in doc 06):
+Four sharp edges you should be able to discuss (2-4 are gym exercises in doc 06):
 
 1. **Expiry is checked before reuse** (lines 192-197): an *expired* token is revoked quietly
    without family revocation. Defensible — expiry isn't evidence of theft — but it means a
@@ -149,6 +157,15 @@ Two sharp edges you should be able to discuss (both are gym exercises in doc 06)
    marked rotated (line 212, saved at line 227), with token issuance in between. A crash in
    the middle leaves two live tokens in one family. Doc 08 rates this; doc 07 shows the test
    that would pin the behavior.
+3. **Replay detection assumes requests arrive one at a time.** Two requests presenting the
+   same live token in parallel both see `IsActive == true` at line 199, both mint a child,
+   and neither trips `RevokeFamilyForReuseAsync`. Nothing in the schema stops it
+   (`RefreshToken` has no concurrency token). The family ends up with two live branches and
+   no `reuse_detected` event. Doc 06, exercise 11.
+4. **The refresh path never re-checks the user.** Lines 205-207 load the `User` but never
+   look at `IsBlocked`, while authorize (line 37) and login
+   ([`IdentityService.cs:58`](../src/NetAuth0.Application/Identity/IdentityService.cs#L58))
+   both do. Doc 06, exercise 12.
 
 Sessions in the UI are just refresh-token families:
 [`GetSessionsAsync`](../src/NetAuth0.Application/OAuth/OAuthService.cs#L82-L89) lists root
@@ -191,8 +208,12 @@ it means *issuing a token can write to the database*.
 [`Program.cs:50-63`](../src/NetAuth0.Api/Program.cs#L50-L63): standard JwtBearer pointed at
 the repo's own discovery document. Signature, issuer, and lifetime are validated;
 **audience is not** (`ValidateAudience = false`) — so a token minted for any client works
-against the admin API if it carries the right permission claims. File that thought for
-doc 08. Authorization is claim-based policies, one per permission string
+against the admin API if it carries the right permission claims. Nor is the token's `typ`
+claim: an ID token (`typ: "id"`, issued at
+[`JwtTokenIssuer.cs:36-44`](../src/NetAuth0.Infrastructure/Security/JwtTokenIssuer.cs#L36-L44))
+has a `sub` and a valid signature, so it is accepted as a bearer token on the
+`[Authorize]`-only endpoints in `AuthController` (MFA enrollment, sessions). File both
+thoughts for doc 08. Authorization is claim-based policies, one per permission string
 ([`Program.cs:65-71`](../src/NetAuth0.Api/Program.cs#L65-L71)), consumed via
 `[Authorize(Policy = "applications:manage")]` in
 [`AdminController`](../src/NetAuth0.Api/Controllers/AdminController.cs#L20-L25).

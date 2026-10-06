@@ -24,8 +24,11 @@ Format per flow: the trace, then **What most readers miss**, then a drill.
 - **Failure-order is an enumeration defense.** Unknown tenant and unknown user both throw
   the same "Invalid credentials." ([`IdentityService.cs:51-56`](../src/NetAuth0.Application/Identity/IdentityService.cs#L51-L56)) —
   the response doesn't reveal whether an email exists. But the *timing* differs: an unknown
-  user skips BCrypt verification (~100ms at work factor 12). A measurable user-enumeration
-  oracle survives the message hygiene.
+  user skips BCrypt verification (work factor 12 — typically hundreds of milliseconds). A
+  measurable user-enumeration oracle survives the message hygiene. So does a message
+  oracle: a locked or blocked account answers "Account is temporarily locked."
+  ([line 61](../src/NetAuth0.Application/Identity/IdentityService.cs#L61)) *before* the
+  password is checked, so anyone can tell that account exists.
 - **Lockout counts only password failures.** A wrong TOTP code throws at
   [line 80-84](../src/NetAuth0.Application/Identity/IdentityService.cs#L80-L84) *without*
   calling `RegisterFailure`. The 6-digit code space is brute-forceable at 20 req/min/IP if
@@ -156,8 +159,12 @@ be the superset?
 
 - **No audit event.** Every other admin action writes one; rotating the keys that all trust
   derives from doesn't. (Doc 10, ticket 1 — it's the ideal first PR.)
-- **Ordering by `CreatedAt` with second-ish precision** — two keys created in the same
-  instant make "current" ambiguous. Unlikely; cheap to harden.
+- **"Current" is decided by an application-server clock.** `CreatedAt` is set in the
+  entity's initializer from `DateTimeOffset.UtcNow`
+  ([`Entity.cs:6`](../src/NetAuth0.Domain/Common/Entity.cs#L6)), not by the database or
+  `IClock`. With several API instances whose clocks disagree, "newest unretired key" can
+  pick the wrong row if two rotations race. Unlikely; cheap to harden (rotation already
+  retires every other key, so a uniqueness rule on "unretired" would make it impossible).
 - **JWKS rebuilds RSA objects from private PEM on every request** — correctness fine,
   performance and key-handling hygiene questionable (doc 09).
 
@@ -174,12 +181,16 @@ repo's real contract:
 
 1. No bearer secret (code, refresh token, recovery code) is ever persisted in plaintext.
 2. An authorization code is redeemable at most once, only by its client, only with its
-   redirect URI and verifier, only within 5 minutes.
+   redirect URI and verifier, only within 5 minutes *("at most once" holds only for
+   sequential requests — parallel redemptions both succeed; doc 06 ex. 11)*.
 3. At most one refresh token per family is active at a time *(currently aspirational —
-   see Flow 3)*.
+   see Flow 3 and doc 06 ex. 11)*.
 4. Every security-relevant state change writes an audit event *(currently false for key
-   rotation)*.
-5. Permission changes take effect within one access-token lifetime (15 min).
+   rotation and MFA enrollment)*.
+5. Permission changes take effect within one access-token lifetime (15 min) — true because
+   every refresh re-queries permissions in `IssueUserTokensAsync`. The analogous promise
+   for *blocking* a user does **not** hold: the refresh path never checks `IsBlocked`
+   (doc 06 ex. 12).
 
 Knowing which invariants are aspirational versus enforced is exactly the kind of judgment
 that distinguishes a senior review from a junior one.
